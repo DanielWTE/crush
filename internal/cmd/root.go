@@ -170,30 +170,37 @@ var heartbit = lipgloss.NewStyle().Foreground(charmtone.Dolly).SetString(`
 // the TUI exits, so the user can resume the session with `crush -s <id>`.
 // Nothing is printed when there is no active session.
 func printSessionResume(model *ui.UI) {
+	banner := config.ExitBannerDefault
+	if cfg := model.Config(); cfg != nil && cfg.Options.TUI != nil && cfg.Options.TUI.ExitBanner != "" {
+		banner = cfg.Options.TUI.ExitBanner
+	}
+	if banner == config.ExitBannerNone {
+		return
+	}
+
 	out := colorprofile.NewWriter(os.Stderr, os.Environ())
 
 	t := styles.ThemeForProvider("")
-	crushLogo := logo.Render(t.Logo.GradCanvas, version.Version, true, logo.Opts{
-		FieldColor:   t.Logo.FieldColor,
-		TitleColorA:  t.Logo.TitleColorA,
-		TitleColorB:  t.Logo.TitleColorB,
-		CharmColor:   t.Logo.CharmColor,
-		VersionColor: t.Logo.VersionColor,
-		Hyper:        false,
-	})
+
+	tw, _, _ := term.GetSize(os.Stdout.Fd())
+	compact := banner == config.ExitBannerCompact
 
 	sess := model.CurrentSession()
 	hasSession := sess != nil && sess.ID != ""
 
-	tw, _, _ := term.GetSize(os.Stdout.Fd())
-	style := lipgloss.NewStyle().Padding(1, 3)
+	var style lipgloss.Style
+	if compact {
+		style = lipgloss.NewStyle()
+	} else {
+		style = lipgloss.NewStyle().Padding(1, 0)
+	}
 	contentWidth := tw - style.GetHorizontalFrameSize()
 
-	info := crushLogo +
-		"\nThanks for using Crush! " +
-		lipgloss.NewStyle().Width(contentWidth).Render(randomExitMessage())
-
-	if hasSession {
+	var info string
+	if compact {
+		if !hasSession {
+			return
+		}
 		title := strings.ReplaceAll(sess.Title, "\n", " ")
 
 		labelWidth := lipgloss.Width("Session  ")
@@ -205,7 +212,35 @@ func printSessionResume(model *ui.UI) {
 		hash := session.HashID(sess.ID)[:7]
 		sessionLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Session  ") + title
 		continueLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Continue ") + "crush -s " + hash
-		info += "\n\n" + sessionLine + "\n" + continueLine
+		info = sessionLine + "\n" + continueLine
+	} else {
+		crushLogo := logo.Render(t.Logo.GradCanvas, version.Version, true, logo.Opts{
+			FieldColor:   t.Logo.FieldColor,
+			TitleColorA:  t.Logo.TitleColorA,
+			TitleColorB:  t.Logo.TitleColorB,
+			CharmColor:   t.Logo.CharmColor,
+			VersionColor: t.Logo.VersionColor,
+			Hyper:        false,
+		})
+
+		info = crushLogo +
+			"\nThanks for using Crush! " +
+			lipgloss.NewStyle().Width(contentWidth).Render(randomExitMessage())
+
+		if hasSession {
+			title := strings.ReplaceAll(sess.Title, "\n", " ")
+
+			labelWidth := lipgloss.Width("Session  ")
+			titleWidth := contentWidth - labelWidth
+			if titleWidth > 0 {
+				title = ansi.Truncate(title, titleWidth, "…")
+			}
+
+			hash := session.HashID(sess.ID)[:7]
+			sessionLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Session  ") + title
+			continueLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Continue ") + "crush -s " + hash
+			info += "\n\n" + sessionLine + "\n" + continueLine
+		}
 	}
 
 	body := style.Width(tw).Render(info)
