@@ -57,6 +57,10 @@ const (
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
+
+	// Allow one follow-up attempt after a malformed tool call. If the model
+	// emits another malformed call in the same turn, stop instead of looping.
+	maxMalformedToolCallsPerTurn = 2
 )
 
 var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version.Version)
@@ -788,6 +792,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	var stepMessages []fantasy.Message
 	var shouldSummarize bool
 	sanitizedToolCalls := make(map[string]bool)
+	var malformedToolCallCount atomic.Int32
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
 	var maxOutputTokens *int64
 	if call.MaxOutputTokens > 0 {
@@ -806,7 +811,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		TopK:             call.TopK,
 		FrequencyPenalty: call.FrequencyPenalty,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			prepared.Messages = options.Messages
+			var sanitizedMessageCount int
+			prepared.Messages, sanitizedMessageCount = sanitizeMalformedToolCallMessages(options.Messages)
+			if sanitizedMessageCount > 0 {
+				slog.Warn(
+					"Sanitized malformed tool call JSON before provider retry",
+					"count", sanitizedMessageCount,
+					"step", options.StepNumber,
+				)
+			}
 			for i := range prepared.Messages {
 				prepared.Messages[i].ProviderOptions = nil
 			}
@@ -951,6 +964,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
 			if wasSanitized {
 				sanitizedToolCalls[tc.ToolCallID] = true
+				malformedToolCallCount.Add(1)
 			}
 			toolCall := message.ToolCall{
 				ID:               tc.ToolCallID,
@@ -1035,6 +1049,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		StopWhen: []fantasy.StopCondition{
+			func(_ []fantasy.StepResult) bool {
+				return malformedToolCallCount.Load() >= maxMalformedToolCallsPerTurn
+			},
 			func(_ []fantasy.StepResult) bool {
 				cw := int64(largeModel.CatwalkCfg.ContextWindow)
 				// If context window is unknown (0), skip auto-summarize

@@ -154,6 +154,18 @@ func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {
 	require.Equal(t, 0, perms.requestCount, "plain ls should not trigger permission request")
 }
 
+func TestBashTool_AllowsMissingDescription(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	tool := newBashToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	require.NotContains(t, tool.Info().Required, "description")
+	resp := runBashTool(t, tool, ctx, BashParams{Command: "pwd"})
+	require.False(t, resp.IsError)
+}
+
 func TestBashTool_ChainedCommandsDenied(t *testing.T) {
 	workingDir := t.TempDir()
 	tool, perms := newBashToolWithRecordingPerms(workingDir, false)
