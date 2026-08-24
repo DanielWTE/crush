@@ -51,6 +51,15 @@ func (h *hookedTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 	h.inner.SetProviderOptions(opts)
 }
 
+// MCP preserves the source-server identity of wrapped MCP tools so
+// turn-scoped on-demand filtering still works when hooks are enabled.
+func (h *hookedTool) MCP() string {
+	if tool, ok := h.inner.(interface{ MCP() string }); ok {
+		return tool.MCP()
+	}
+	return ""
+}
+
 func (h *hookedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	sessionID := tools.GetSessionFromContext(ctx)
 	result, err := h.runner.Run(ctx, hooks.EventPreToolUse, sessionID, call.Name, call.Input)

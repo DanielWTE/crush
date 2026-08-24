@@ -42,7 +42,7 @@ const (
 //
 // Servers gone from config are removed entirely; enabled-in-config servers
 // marked disabled are disabled.
-func reconcile(current config.MCPs, running map[string]ClientInfo) map[string]reinitAction {
+func reconcile(current config.MCPs, running map[string]ClientInfo, activeOnDemand map[string]bool) map[string]reinitAction {
 	actions := map[string]reinitAction{}
 
 	// Servers no longer in config are removed entirely.
@@ -56,6 +56,12 @@ func reconcile(current config.MCPs, running map[string]ClientInfo) map[string]re
 		info, exists := running[name]
 		if m.Disabled {
 			if exists && info.State != StateDisabled {
+				actions[name] = reinitDisable
+			}
+			continue
+		}
+		if m.OnDemand && !activeOnDemand[name] {
+			if exists && info.State != StateDisabled && info.State != StateNeedsAuth {
 				actions[name] = reinitDisable
 			}
 			continue
@@ -127,7 +133,7 @@ func Reinitialize(ctx context.Context, cfg *config.ConfigStore) {
 // reconcileOnce applies one reconciliation pass against the current config.
 func reconcileOnce(ctx context.Context, cfg *config.ConfigStore) {
 	current := cfg.Config().MCP
-	actions := reconcile(current, states.Copy())
+	actions := reconcile(current, states.Copy(), onDemandActiveSnapshot())
 	for name, action := range actions {
 		switch action {
 		case reinitRemove:
@@ -163,9 +169,10 @@ func removeServer(name string) {
 	gens.Del(name)
 }
 
-// mcpConfigEqual reports whether two MCPConfig values are equal, ignoring
-// the internally-managed OAuthToken field. Field-by-field rather than
-// reflect.DeepEqual so the comparison is explicit about what matters.
+// mcpConfigEqual reports whether two MCPConfig values require the same live
+// connection, ignoring the internally-managed OAuthToken and trigger-only
+// Aliases fields. Field-by-field rather than reflect.DeepEqual so the
+// comparison is explicit about what matters.
 // TestMCPConfigEqualExhaustive guards against drift: it fails at test
 // time if a new field is added to MCPConfig without a decision about
 // whether it participates here.
@@ -176,6 +183,7 @@ func mcpConfigEqual(a, b config.MCPConfig) bool {
 		a.Type == b.Type &&
 		a.URL == b.URL &&
 		a.Disabled == b.Disabled &&
+		a.OnDemand == b.OnDemand &&
 		slices.Equal(a.DisabledTools, b.DisabledTools) &&
 		slices.Equal(a.EnabledTools, b.EnabledTools) &&
 		a.Timeout == b.Timeout &&

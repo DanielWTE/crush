@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,6 +99,14 @@ type SessionAgentCall struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	NonInteractive   bool
+	// OnDemandMCPs is the complete set of cold MCP profiles. ActiveOnDemand
+	// is the subset explicitly requested for this turn. SessionAgent filters
+	// process-global MCP tools and instructions through these lists so
+	// concurrent sessions do not inherit each other's cold profiles.
+	OnDemandMCPs    []string
+	ActiveOnDemand  []string
+	ReleaseOnDemand func()
+	onDemandLease   *onDemandLeaseMarker
 	// OnComplete, when non-nil, replaces the default RunComplete
 	// publish path: the inner Run hands the terminal payload to this
 	// callback instead of emitting it on the RunComplete broker. The
@@ -136,6 +145,17 @@ type SessionAgentCall struct {
 	OnAuthRefresh func(ctx context.Context, err *fantasy.ProviderError) error
 }
 
+type onDemandLeaseMarker struct {
+	_ byte
+}
+
+type onDemandContextKey string
+
+const (
+	onDemandConfiguredKey onDemandContextKey = "on_demand_configured"
+	onDemandActiveKey     onDemandContextKey = "on_demand_active"
+)
+
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
 	BeginAccepted(sessionID string) *AcceptedRun
@@ -159,6 +179,28 @@ type Model struct {
 	CatwalkCfg catwalk.Model
 	ModelCfg   config.SelectedModel
 	FlatRate   bool
+}
+
+type namedMCPTool interface {
+	MCP() string
+}
+
+func filterOnDemandTools(agentTools []fantasy.AgentTool, configured, active []string) []fantasy.AgentTool {
+	if len(configured) == 0 {
+		return agentTools
+	}
+	filtered := make([]fantasy.AgentTool, 0, len(agentTools))
+	for _, tool := range agentTools {
+		mcpTool, ok := tool.(namedMCPTool)
+		if !ok || mcpAllowedForTurn(mcpTool.MCP(), configured, active) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func mcpAllowedForTurn(name string, configured, active []string) bool {
+	return !slices.Contains(configured, name) || slices.Contains(active, name)
 }
 
 // activeCancel wraps a context.CancelFunc with a unique pointer identity.
@@ -395,25 +437,27 @@ func (a *sessionAgent) enqueueCall(call SessionAgentCall) {
 // RunID, e.g. `crush run`, would otherwise hang). Uncanceled calls without
 // a RunID are returned in fold to be folded into the active turn,
 // preserving the existing follow-up behavior. Uncanceled calls that carry
-// a RunID are left in the queue so each runs as its own turn via the
-// recursive run path and publishes its own RunComplete, giving every
-// RunID-bearing prompt an explicit lifecycle instead of being silently
-// absorbed into another turn. fold is processed by the caller without the
+// a RunID or an on-demand MCP lease are left in the queue so each runs as
+// its own turn via the recursive run path. This gives every RunID-bearing
+// prompt an explicit lifecycle and ensures cold MCP instructions are present
+// from the first model step. fold is processed by the caller without the
 // lock held.
 func (a *sessionAgent) drainQueueForStep(sessionID string) (fold, canceledWithRunID []SessionAgentCall) {
 	dispatchLock := a.sessionMu(sessionID)
 	dispatchLock.Lock()
-	defer dispatchLock.Unlock()
 	queuedCalls, _ := a.messageQueue.Get(sessionID)
 	var keep []SessionAgentCall
+	var canceledWithoutRunID []SessionAgentCall
 	for _, queued := range queuedCalls {
 		if a.canceledBySeq(sessionID, queued.acceptSeq) {
 			if queued.RunID != "" {
 				canceledWithRunID = append(canceledWithRunID, queued)
+			} else {
+				canceledWithoutRunID = append(canceledWithoutRunID, queued)
 			}
 			continue
 		}
-		if queued.RunID != "" {
+		if queued.RunID != "" || len(queued.ActiveOnDemand) > 0 {
 			keep = append(keep, queued)
 			continue
 		}
@@ -424,6 +468,12 @@ func (a *sessionAgent) drainQueueForStep(sessionID string) (fold, canceledWithRu
 	} else {
 		a.messageQueue.Set(sessionID, keep)
 	}
+	dispatchLock.Unlock()
+	for _, canceled := range canceledWithoutRunID {
+		if canceled.ReleaseOnDemand != nil {
+			canceled.ReleaseOnDemand()
+		}
+	}
 	return fold, canceledWithRunID
 }
 
@@ -433,10 +483,16 @@ func (a *sessionAgent) drainQueueForStep(sessionID string) (fold, canceledWithRu
 // cleared by Cancel/ClearQueue — would otherwise leave a caller blocked on
 // that RunID: `crush run` ignores live message events and exits only on a
 // RunComplete whose RunID matches. Calls without a RunID had no such waiter
-// and are dropped silently as before. A detached, bounded context keeps the
-// must-deliver publish alive even when the run context that triggered the
-// drop is already canceled.
+// and are dropped silently as before. Every dropped call still releases its
+// on-demand MCP lease. A detached, bounded context keeps the must-deliver
+// publish alive even when the run context that triggered the drop is already
+// canceled.
 func (a *sessionAgent) publishCanceledQueueDrops(drops []SessionAgentCall) {
+	for _, d := range drops {
+		if d.ReleaseOnDemand != nil {
+			d.ReleaseOnDemand()
+		}
+	}
 	var hasRunID bool
 	for _, d := range drops {
 		if d.RunID != "" {
@@ -568,6 +624,21 @@ func ValidateCall(call SessionAgentCall) error {
 }
 
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+	var releaseOnce sync.Once
+	releaseOnDemand := func() {
+		releaseOnce.Do(func() {
+			if call.ReleaseOnDemand != nil {
+				call.ReleaseOnDemand()
+			}
+		})
+	}
+	leaseOwned := true
+	defer func() {
+		if leaseOwned {
+			releaseOnDemand()
+		}
+	}()
+
 	if err := ValidateCall(call); err != nil {
 		return nil, err
 	}
@@ -634,6 +705,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// back to the default broker publish, which is what existing
 		// subscribers expect.
 		a.enqueueCall(call)
+		leaseOwned = false
 		if call.Accepted != nil {
 			call.Accepted.Close()
 		}
@@ -645,6 +717,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the lock so a Cancel that arrives between here and assistant creation
 	// is not lost.
 	runCtx := context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
+	runCtx = context.WithValue(runCtx, onDemandConfiguredKey, call.OnDemandMCPs)
+	runCtx = context.WithValue(runCtx, onDemandActiveKey, call.ActiveOnDemand)
 	genCtx, cancel = context.WithCancel(runCtx)
 	ac := &activeCancel{cancel: cancel}
 	a.activeRequests.Set(call.SessionID, ac)
@@ -661,7 +735,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	defer a.activeRequests.CompareAndDelete(call.SessionID, ac)
 
 	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
-	agentTools := a.tools.Copy()
+	agentTools := filterOnDemandTools(a.tools.Copy(), call.OnDemandMCPs, call.ActiveOnDemand)
 	largeModel := a.largeModel.Get()
 	systemPrompt := a.systemPrompt.Get()
 	promptPrefix := a.systemPromptPrefix.Get()
@@ -669,6 +743,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	for _, server := range mcp.GetStates() {
 		if server.State != mcp.StateConnected {
+			continue
+		}
+		if !mcpAllowedForTurn(server.Name, call.OnDemandMCPs, call.ActiveOnDemand) {
 			continue
 		}
 		if s := server.Client.InitializeResult().Instructions; s != "" {
@@ -825,7 +902,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			}
 
 			// Use latest tools (updated by SetTools when MCP tools change).
-			prepared.Tools = a.tools.Copy()
+			prepared.Tools = filterOnDemandTools(a.tools.Copy(), call.OnDemandMCPs, call.ActiveOnDemand)
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -1262,12 +1339,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// mark, or untracked); keep any queued after the cancel (higher
 		// sequence) so they still run.
 		var kept []SessionAgentCall
-		var canceledRunIDDrops []SessionAgentCall
+		var canceledDrops []SessionAgentCall
 		for _, q := range queuedMessages {
 			if q.acceptSeq == 0 || q.acceptSeq <= mark {
-				if q.RunID != "" {
-					canceledRunIDDrops = append(canceledRunIDDrops, q)
-				}
+				canceledDrops = append(canceledDrops, q)
 				continue
 			}
 			kept = append(kept, q)
@@ -1277,7 +1352,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// A dropped prompt carrying a RunID must still publish its
 		// terminal cancelled RunComplete so a caller waiting on that
 		// RunID does not hang.
-		a.publishCanceledQueueDrops(canceledRunIDDrops)
+		a.publishCanceledQueueDrops(canceledDrops)
 	}
 	if len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
@@ -1339,6 +1414,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			complete.Cancelled = true
 		}
 		a.publishRunComplete(ctx, call, complete)
+	}
+	sameOnDemandLease := call.onDemandLease != nil && firstQueuedMessage.onDemandLease == call.onDemandLease
+	if !sameOnDemandLease {
+		// The next queued prompt owns a separate on-demand lease. Release
+		// this turn's profiles before the recursive handoff so cold servers
+		// do not remain connected for the rest of the queue. A summarize
+		// continuation preserves the same lease marker and keeps it alive.
+		releaseOnDemand()
+		leaseOwned = false
 	}
 	return a.Run(ctx, firstQueuedMessage)
 }

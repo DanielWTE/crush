@@ -265,6 +265,21 @@
           "description": "Whether this MCP server is disabled",
           "default": false
         },
+        "on_demand": {
+          "type": "boolean",
+          "description": "Start this MCP server only for turns that explicitly request it",
+          "default": false
+        },
+        "aliases": {
+          "items": {
+            "type": "string",
+            "examples": [
+              "google search console"
+            ]
+          },
+          "type": "array",
+          "description": "Additional names that can activate this on-demand MCP server"
+        },
         "disabled_tools": {
           "items": {
             "type": "string",

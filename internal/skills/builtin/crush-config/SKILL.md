@@ -117,9 +117,11 @@ mcp remove <name>                              # alias: rm
 
 Flags: `--command CMD`, `--args ARG` (repeatable), `--env KEY VALUE`
 (repeatable), `--url URL`, `--header KEY VALUE` (repeatable), `--timeout N`,
-`--disabled BOOL`, `--disabled-tools TOOL` (repeatable), `--enabled-tools TOOL`
-(repeatable), `--oauth BOOL`, `--oauth-client-id ID`, `--oauth-client-secret SECRET`,
-`--oauth-callback-port PORT`.
+`--disabled BOOL`, `--on-demand BOOL`, `--alias NAME` (repeatable),
+`--disabled-tools TOOL` (repeatable), `--enabled-tools TOOL` (repeatable),
+`--oauth BOOL`, `--oauth-client-id ID`, `--oauth-client-secret SECRET`,
+`--oauth-callback-port PORT`. On-demand servers start only when a prompt asks
+to use their name or alias (small typos are accepted) and stop after the turn.
 
 ```bash
 mcp add github --type http \

@@ -536,6 +536,7 @@ func TestReconcile(t *testing.T) {
 	}
 	changed := func() config.MCPConfig { m := base; m.URL = "https://other.com/mcp"; return m }()
 	disabled := func() config.MCPConfig { m := base; m.Disabled = true; return m }()
+	cold := func() config.MCPConfig { m := base; m.OnDemand = true; return m }()
 	ptr := func(m config.MCPConfig) *config.MCPConfig { return &m }
 
 	// server seeds the running state reconcile diffs against: a state, the
@@ -551,6 +552,7 @@ func TestReconcile(t *testing.T) {
 		name    string
 		servers map[string]server
 		current config.MCPs
+		active  map[string]bool
 		want    map[string]reinitAction
 	}{
 		{
@@ -587,6 +589,30 @@ func TestReconcile(t *testing.T) {
 			servers: map[string]server{"a": {state: StateDisabled}},
 			current: config.MCPs{"a": disabled},
 			want:    map[string]reinitAction{},
+		},
+		{
+			name:    "inactive on-demand server stays cold",
+			current: config.MCPs{"a": cold},
+			want:    map[string]reinitAction{},
+		},
+		{
+			name:    "inactive on-demand connection is disabled",
+			servers: map[string]server{"a": {state: StateConnected, config: cold}},
+			current: config.MCPs{"a": cold},
+			want:    map[string]reinitAction{"a": reinitDisable},
+		},
+		{
+			name:    "inactive on-demand auth request remains visible",
+			servers: map[string]server{"a": {state: StateNeedsAuth}},
+			current: config.MCPs{"a": cold},
+			want:    map[string]reinitAction{},
+		},
+		{
+			name:    "active on-demand server starts",
+			servers: map[string]server{"a": {state: StateDisabled}},
+			current: config.MCPs{"a": cold},
+			active:  map[string]bool{"a": true},
+			want:    map[string]reinitAction{"a": reinitStart},
 		},
 		{
 			// Regression: disabling clears the recorded config, so a server
@@ -650,7 +676,7 @@ func TestReconcile(t *testing.T) {
 					PendingConfig: s.pending,
 				}
 			}
-			got := reconcile(tc.current, running)
+			got := reconcile(tc.current, running, tc.active)
 			require.Equal(t, tc.want, got)
 		})
 	}
@@ -705,6 +731,8 @@ func TestMCPConfigEqual(t *testing.T) {
 			true,
 		},
 		{"disabled vs enabled", base, func() config.MCPConfig { m := base; m.Disabled = true; return m }(), false},
+		{"on-demand mode", base, func() config.MCPConfig { m := base; m.OnDemand = true; return m }(), false},
+		{"aliases ignored", base, func() config.MCPConfig { m := base; m.Aliases = []string{"alias"}; return m }(), true},
 		{"oauth flag", base, func() config.MCPConfig { m := base; m.OAuth = true; return m }(), false},
 	}
 
@@ -726,7 +754,8 @@ func TestMCPConfigEqualExhaustive(t *testing.T) {
 
 	// Fields intentionally excluded from the comparison.
 	excluded := map[string]bool{
-		"OAuthToken": true, // internally managed, refreshed out-of-band.
+		"Aliases":    true, // Natural-language triggers do not affect the connection.
+		"OAuthToken": true, // Internally managed, refreshed out-of-band.
 	}
 
 	typ := reflect.TypeOf(config.MCPConfig{})

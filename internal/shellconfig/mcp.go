@@ -13,7 +13,8 @@ import (
 //
 //	mcp add <name> --type stdio|sse|http [--command CMD] [--args ARG ...]
 //	    [--env KEY VALUE ...] [--url URL] [--header KEY VALUE ...]
-//	    [--timeout N] [--disabled true|false]
+//	    [--timeout N] [--disabled true|false] [--on-demand true|false]
+//	    [--alias NAME ...]
 //	    [--disabled-tools TOOL ...] [--enabled-tools TOOL ...]
 //	    [--oauth true|false] [--oauth-client-id ID]
 //	    [--oauth-client-secret SECRET] [--oauth-callback-port PORT]
@@ -50,6 +51,8 @@ var mcpAddFlags = []flagSpec{
 	{name: "--header", child: "headers", kind: flagKeyValue, op: opSetChild},
 	{name: "--timeout", jsonKey: "timeout", kind: flagInt, op: opSet},
 	{name: "--disabled", jsonKey: "disabled", kind: flagBool, op: opSet},
+	{name: "--on-demand", jsonKey: "on_demand", kind: flagBool, op: opSet},
+	{name: "--alias", jsonKey: "aliases", kind: flagString, op: opAppend},
 	{name: "--disabled-tools", jsonKey: "disabled_tools", kind: flagString, op: opAppend},
 	{name: "--enabled-tools", jsonKey: "enabled_tools", kind: flagString, op: opAppend},
 	{name: "--oauth", jsonKey: "oauth", kind: flagBool, op: opSet},
@@ -60,7 +63,7 @@ var mcpAddFlags = []flagSpec{
 
 func mcpAdd(b *ConfigBuilder, args []string, stderr io.Writer) error {
 	if len(args) < 3 {
-		return usage(stderr, "usage: mcp add <name> --type stdio|sse|http [--command CMD] [--args ARG ...] [--env KEY VALUE ...] [--url URL] [--header KEY VALUE ...] [--timeout N] [--disabled true|false] [--disabled-tools TOOL ...] [--enabled-tools TOOL ...] [--oauth true|false] [--oauth-client-id ID] [--oauth-client-secret SECRET] [--oauth-callback-port PORT]")
+		return usage(stderr, "usage: mcp add <name> --type stdio|sse|http [--command CMD] [--args ARG ...] [--env KEY VALUE ...] [--url URL] [--header KEY VALUE ...] [--timeout N] [--disabled true|false] [--on-demand true|false] [--alias NAME ...] [--disabled-tools TOOL ...] [--enabled-tools TOOL ...] [--oauth true|false] [--oauth-client-id ID] [--oauth-client-secret SECRET] [--oauth-callback-port PORT]")
 	}
 	name := args[2]
 	slog.Info("MCP server defined in shell config", "name", name)

@@ -118,6 +118,32 @@ func TestRunSubAgent(t *testing.T) {
 		assert.False(t, resp.IsError)
 	})
 
+	t.Run("inherits on-demand MCP scope", func(t *testing.T) {
+		env := testEnv(t)
+		coord := newTestCoordinator(t, env, providerID, providerCfg)
+
+		parentSession, err := env.sessions.Create(t.Context(), "Parent")
+		require.NoError(t, err)
+
+		agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			assert.Equal(t, []string{"rybbit", "sistrix"}, call.OnDemandMCPs)
+			assert.Equal(t, []string{"sistrix"}, call.ActiveOnDemand)
+			return agentResultWithText("done"), nil
+		})
+		ctx := context.WithValue(t.Context(), onDemandConfiguredKey, []string{"rybbit", "sistrix"})
+		ctx = context.WithValue(ctx, onDemandActiveKey, []string{"sistrix"})
+
+		_, err = coord.runSubAgent(ctx, subAgentParams{
+			Agent:          agent,
+			SessionID:      parentSession.ID,
+			AgentMessageID: "msg-1",
+			ToolCallID:     "call-1",
+			Prompt:         "do something",
+			SessionTitle:   "Test Session",
+		})
+		require.NoError(t, err)
+	})
+
 	t.Run("cost update failure preserves output", func(t *testing.T) {
 		env := testEnv(t)
 		coord := newTestCoordinator(t, env, providerID, providerCfg)
