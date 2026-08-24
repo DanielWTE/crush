@@ -80,6 +80,23 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 		require.Equal(t, "https://mcp.example.com/api", sct.Endpoint)
 	})
 
+	t.Run("OAuth HTTP normalizes trailing slash for transport", func(t *testing.T) {
+		t.Parallel()
+		m := config.MCPConfig{
+			Type:              config.MCPHttp,
+			URL:               "https://mcp.example.com/api/",
+			OAuth:             true,
+			OAuthCallbackPort: 45123,
+		}
+		tr, handler, err := createTransport(t.Context(), nil, "test", m, shell)
+		require.NoError(t, err)
+		require.NotNil(t, handler)
+		t.Cleanup(handler.Close)
+		sct, ok := tr.(*mcp.StreamableClientTransport)
+		require.True(t, ok, "expected StreamableClientTransport, got %T", tr)
+		require.Equal(t, "https://mcp.example.com/api", sct.Endpoint)
+	})
+
 	t.Run("sse success expands $(cmd)", func(t *testing.T) {
 		t.Parallel()
 		m := config.MCPConfig{

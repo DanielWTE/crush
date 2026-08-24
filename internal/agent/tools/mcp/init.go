@@ -1077,7 +1077,7 @@ func createTransport(ctx context.Context, cfg *config.ConfigStore, name string, 
 			}
 			authURLs.Set(name, oauthHandler)
 			return &mcp.StreamableClientTransport{
-				Endpoint:     url,
+				Endpoint:     normalizedURL,
 				OAuthHandler: oauthHandler,
 			}, oauthHandler, nil
 		}
