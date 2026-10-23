@@ -295,6 +295,8 @@ Flags:
       --header key value         HTTP header (repeatable)
       --timeout int              startup timeout in seconds
       --disabled bool            disable without removing
+      --on-demand bool           start only for explicitly requested turns
+      --alias string             activation name (repeatable)
       --disabled-tools string       deny a server tool (repeatable)
       --enabled-tools string        allow only these server tools (repeatable)
       --oauth bool                  enable OAuth 2.1 flow (HTTP only)
@@ -308,6 +310,22 @@ mcp add github --type http \
   --url "https://api.githubcopilot.com/mcp/" \
   --header Authorization "Bearer $GH_PAT"
 ```
+
+Use `--on-demand true` to keep a server disconnected until a prompt asks for
+it. The server name and every `--alias` can activate it alongside natural
+German or English intent such as `nutze`, `verwende`, `use`, `with`, or
+`MCP`. Small typos are accepted. For example, both “Bitte nutze Sistrix
+dafür” and “use sisrtix for this” activate this profile for one turn:
+
+```bash
+mcp add sistrix --type http --url "https://example.com/mcp" \
+  --on-demand true \
+  --alias seo-tool
+```
+
+Only explicitly named profiles are exposed to the model, and their
+connections are closed after the turn. Name multiple profiles in one prompt
+to load only that combination.
 
 As with providers, a header whose value resolves to the empty string is
 dropped from the outgoing request.

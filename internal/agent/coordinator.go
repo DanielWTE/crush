@@ -331,6 +331,22 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		}
 	}
 
+	configuredOnDemand := mcp.OnDemandNames(c.cfg.Config().MCP)
+	requestedOnDemand := mcp.MatchOnDemand(prompt, c.cfg.Config().MCP)
+	releaseOnDemand, err := mcp.AcquireOnDemand(ctx, c.cfg, requestedOnDemand)
+	if err != nil {
+		return nil, fmt.Errorf("failed to activate requested MCP profile: %w", err)
+	}
+	releaseTransferred := false
+	defer func() {
+		if !releaseTransferred {
+			releaseOnDemand()
+		}
+	}()
+	if len(requestedOnDemand) > 0 {
+		slog.Info("Activated on-demand MCP profiles", "names", requestedOnDemand)
+	}
+
 	// refresh models before each run. Snapshot the agent first: the run,
 	// its model settings, and the model refresh below must all target the
 	// same agent even if SetMainAgent swaps the main agent mid-flight.
@@ -384,7 +400,9 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	runID := RunIDFromContext(ctx)
 	channel := ChannelFromContext(ctx)
 	c.syncSessionChannel(ctx, sessionID, channel)
+	onDemandLease := &onDemandLeaseMarker{}
 	run := func() (*fantasy.AgentResult, error) {
+		releaseTransferred = true
 		return agent.Run(ctx, SessionAgentCall{
 			SessionID:         sessionID,
 			RunID:             runID,
@@ -402,6 +420,10 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			OnComplete:        onComplete,
 			Accepted:          accept,
 			OnAuthRefresh:     c.makeAuthRefreshCallback(providerCfg),
+			OnDemandMCPs:      configuredOnDemand,
+			ActiveOnDemand:    requestedOnDemand,
+			ReleaseOnDemand:   releaseOnDemand,
+			onDemandLease:     onDemandLease,
 		})
 	}
 	beforeLoaded := c.skillTracker.LoadedNames()
@@ -1681,6 +1703,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 
 	// Run the agent
+	configuredOnDemand, _ := ctx.Value(onDemandConfiguredKey).([]string)
+	activeOnDemand, _ := ctx.Value(onDemandActiveKey).([]string)
 	run := func() (*fantasy.AgentResult, error) {
 		return params.Agent.Run(ctx, SessionAgentCall{
 			SessionID:        session.ID,
@@ -1694,6 +1718,8 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			PresencePenalty:  model.ModelCfg.PresencePenalty,
 			NonInteractive:   true,
 			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+			OnDemandMCPs:     configuredOnDemand,
+			ActiveOnDemand:   activeOnDemand,
 		})
 	}
 	result, err := run()

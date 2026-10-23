@@ -35,3 +35,11 @@ mcp remove drop`)
 	require.Contains(t, mcps, "keep")
 	require.NotContains(t, mcps, "drop")
 }
+
+func TestShellConfigMCPOnDemand(t *testing.T) {
+	store := loadCrushSh(t, `mcp add sistrix --type http --url "https://example.com/mcp" --on-demand true --alias seo-tool`)
+
+	m := store.Config().MCP["sistrix"]
+	require.True(t, m.OnDemand)
+	require.Equal(t, []string{"seo-tool"}, m.Aliases)
+}

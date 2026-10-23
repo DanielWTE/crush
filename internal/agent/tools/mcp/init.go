@@ -343,6 +343,11 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 	var wg sync.WaitGroup
 	// Initialize states for all configured MCPs
 	for name, m := range cfg.Config().MCP {
+		if m.OnDemand {
+			updateState(name, StateDisabled, nil, nil, Counts{})
+			slog.Debug("Skipping inactive MCP", "name", name, "on_demand", m.OnDemand)
+			continue
+		}
 		if slices.Contains(localDisabled, name) {
 			updateState(name, StateDisabled, nil, nil, Counts{})
 			slog.Debug("Skipping MCP disabled for this repository", "name", name)
@@ -436,9 +441,9 @@ func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore)
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
 
-	if m.Disabled {
+	if m.Disabled || m.OnDemand {
 		updateState(name, StateDisabled, nil, nil, Counts{})
-		slog.Debug("Skipping disabled MCP", "name", name)
+		slog.Debug("Skipping inactive MCP", "name", name, "on_demand", m.OnDemand)
 		return nil
 	}
 
@@ -483,6 +488,9 @@ func AuthenticateMCP(ctx context.Context, cfg *config.ConfigStore, name string) 
 	_, err := connectAndRegister(ctx, cfg, name, m, currentGen(name), cfg.Resolver(), ChannelOptIn(m, cfg.Overrides().EnabledChannels, name))
 	if err != nil {
 		return err
+	}
+	if m.OnDemand && !onDemandInUse(name) {
+		return DisableSingle(cfg, name)
 	}
 	return nil
 }
@@ -1268,7 +1276,7 @@ func createTransport(ctx context.Context, cfg *config.ConfigStore, name string, 
 			}
 			authURLs.Set(name, oauthHandler)
 			return &mcp.StreamableClientTransport{
-				Endpoint:     url,
+				Endpoint:     normalizedURL,
 				OAuthHandler: oauthHandler,
 			}, oauthHandler, nil
 		}

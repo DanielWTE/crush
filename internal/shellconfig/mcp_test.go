@@ -43,6 +43,19 @@ func TestMCPOAuthFlags(t *testing.T) {
 	require.Equal(t, float64(8085), m["oauth_callback_port"])
 }
 
+func TestMCPOnDemandFlags(t *testing.T) {
+	t.Parallel()
+
+	result := loadScript(t, `mcp add gsc --type http --url "https://example.com/mcp" \
+  --on-demand true \
+  --alias "google search console" \
+  --alias search-console`)
+
+	m := result["mcp"].(map[string]any)["gsc"].(map[string]any)
+	require.Equal(t, true, m["on_demand"])
+	require.Equal(t, []any{"google search console", "search-console"}, m["aliases"])
+}
+
 func TestMCPUnknownSubcommand(t *testing.T) {
 	t.Parallel()
 
